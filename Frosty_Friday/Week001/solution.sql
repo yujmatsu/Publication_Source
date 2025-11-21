@@ -1,0 +1,38 @@
+----
+-- FROSTY_FRIDAY用各種準備
+----
+-- 1.ウェアハウスの作成
+-- 2.リソースモニターの作成
+-- 3.専用データベースの作成
+-- 4.課題ごとにスキーマの作成
+
+-- 管理用ロールになる (SYSADMIN推奨)
+USE ROLE SYSADMIN;
+
+GRANT USAGE ON WAREHOUSE TEMP_WH to ROLE SYSADMIN;
+
+-- 1. 専用ウェアハウスの作成 (X-SMALLで十分)
+CREATE OR REPLACE WAREHOUSE FF_WH
+  WAREHOUSE_SIZE = 'XSMALL'
+  AUTO_SUSPEND = 60   -- 60秒アイドル状態が続くと自動停止（コスト節約）
+  AUTO_RESUME = TRUE; -- クエリが投げられたら自動再開
+
+-- 2. 安全策：リソースモニターの作成と割り当て (任意ですが推奨)
+-- (ACCOUNTADMIN権限が必要です)
+USE ROLE ACCOUNTADMIN;
+CREATE OR REPLACE RESOURCE MONITOR FF_MONITOR
+  WITH CREDIT_QUOTA = 5 -- 月間5クレジットで停止
+  TRIGGERS ON 100 PERCENT DO SUSPEND;
+
+ALTER WAREHOUSE FF_WH SET RESOURCE_MONITOR = FF_MONITOR;
+USE ROLE SYSADMIN; -- ロールを戻す
+
+-- 3. 専用データベースの作成
+CREATE DATABASE IF NOT EXISTS FROSTY_FRIDAY;
+--DBコメント追加
+COMMENT ON DATABASE FROSTY_FRIDAY IS 'FROSTY_FRIDAY用DB';
+
+-- 4. 課題ごとにスキーマを切る運用にする予定
+-- 課題は100週以上あるため、ゼロ埋め (WEEK_001) にしておくとソートしやすく便利です
+CREATE SCHEMA IF NOT EXISTS FROSTY_FRIDAY.WEEK_001;
+
