@@ -113,7 +113,6 @@ FROM FF_week_5;
 -- どちらも同じ結果(30, 60...)が返ってくれば成功です！
 -- 処理速度として微妙に早いのはやはりSQLの方になっていると思います。（ただ、簡単な処理なのでそこまで差がないはずです）
 
-
 -- 任意：後片付け
 -- DROP FUNCTION IF EXISTS timesthree_sql(INT);
 -- DROP FUNCTION IF EXISTS timesthree_python(INT);
