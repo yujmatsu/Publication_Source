@@ -55,7 +55,8 @@ INSERT INTO FF_week_5 (start_int) VALUES
     (20),
     (33),
     (100),
-    (-5);
+    (-5),
+    (NULL);-- NULLの挙動も見ておきましょう
 
 -- データ確認
 SELECT * FROM FF_week_5;
@@ -83,11 +84,13 @@ CREATE OR REPLACE FUNCTION timesthree_python(input_int INT)
 RETURNS INT
 LANGUAGE PYTHON
 RUNTIME_VERSION = '3.12'       -- 利用するPythonのバージョン
-HANDLER = 'multiply_by_three' -- 呼び出す関数名(def)を指定
+HANDLER = 'multiply_logic' -- 呼び出す関数名(def)を指定
 AS
 $$
-def multiply_by_three(x):
+def multiply_logic(x):
     # ここはPythonの世界
+    if x is None:
+        return None
     return x * 3
 $$;
 
@@ -108,7 +111,7 @@ SELECT
 FROM FF_week_5;
 
 -- どちらも同じ結果(30, 60...)が返ってくれば成功です！
--- 処理速度として微妙に早いのはやはりSQLの方になっていると思います。
+-- 処理速度として微妙に早いのはやはりSQLの方になっていると思います。（ただ、簡単な処理なのでそこまで差がないはずです）
 
 
 -- 任意：後片付け
