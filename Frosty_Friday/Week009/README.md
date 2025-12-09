@@ -26,8 +26,6 @@ Snowflake の実践的なスキルを磨くためのコミュニティ課題、�
 課題の詳細は公式サイトで確認できます。
 [Week 9 – Intermediate – Tag-based Masking Policies](https://frostyfriday.org/blog/2022/08/12/week-9-intermediate/)
 
-![](/images/20251208_frostyfriday_009/1.png) 
-
 ### 課題のストーリー
 悪の組織にも「スーパーヒーロー」のデータ漏洩対策が必要です。
 `data_to_be_masked` テーブルにある `first_name` と `last_name` をマスクしたいのですが、以下の要件があります。
@@ -41,13 +39,12 @@ Snowflake の実践的なスキルを磨くためのコミュニティ課題、�
     * **Role `foo2`:** 全てのデータが見える。
 
 
-
 > **攻略のアプローチについて**
 > Frosty Friday の要件には「ポリシー内で `CURRENT_ROLE()` などのロールチェック機能を使わないこと」という記述があります（理想的にはロール自体にもタグを付け、タグ同士を比較するのが最も抽象度が高い方法です）。
 >
-> しかし今回は、**「実務で最もよく使われるパターン」** を学ぶため、あえて **「権限管理テーブル（マッピングテーブル）を作成し、`CURRENT_ROLE()` と照合する」** というアプローチで攻略します。
->
->※課題の“理想解”とは異なりますが、実務で頻出の RBAC×台帳テーブル パターンとして紹介します
+> 今回は以下の2つのパターンを紹介します。
+> * **パターン1 (実務的):** マッピングテーブルを作成し、`CURRENT_ROLE()` をキーにして参照する。
+> * **パターン2 (発展的):** ロールにもタグを付け、タグ同士のレベルを比較する（マッピングテーブル不要）。
 
 
 ## 知識：タグベースのマスキングポリシー
@@ -68,6 +65,11 @@ Snowflake の実践的なスキルを磨くためのコミュニティ課題、�
 ## 実践：ハンズオン
 
 それでは、Snowsight でやっていきましょう。
+
+## パターン1：マッピングテーブルによる制御
+
+まずは、権限管理テーブル（マッピングテーブル）を使って制御する方法です。
+SQL（ポリシー）を変更することなく、テーブルのレコード更新だけで権限管理ができるのがメリットです。
 
 ### Step 0: コンテキストと変数の準備
 
@@ -145,7 +147,8 @@ INSERT INTO auth_matrix (role_name, allowed_tag_value) VALUES
 ### Step 3: タグとマスキングポリシーの作成・適用
 
 ここからの操作は強力な権限が必要なため、**`ACCOUNTADMIN`** ロールで実行します。
-（※タグ作成者とポリシー適用者が異なると権限エラーになりやすいため、まとめて強い権限で行うのがハンズオンでは確実です）
+（※タグ作成者とポリシー適用者が異なると権限エラーになりやすいため、まとめて強い権限で行うのがハンズオンでは確実です。）
+ポリシーの中で `SYSTEM$GET_TAG_ON_CURRENT_COLUMN` 関数を使い、**「今アクセスしようとしている列に付いているタグの値」** を取得するのがキモです。
 
 
 
@@ -246,8 +249,120 @@ SELECT * FROM data_to_be_masked LIMIT 5;
 -- 結果: first_name=見える, last_name=見える, hero_name=見える
 ```
 
-完璧です。
-SQL（ポリシー定義）を一切変更することなく、テーブルの行（`auth_matrix`）を更新するだけで権限を変更できる仕組みが完成しました。
+完璧です。これでパターン1の攻略は完了です。
+
+## 発展：パターン2（タグ vs タグ）による権限制御
+
+先ほどの手順では「マッピングテーブル」を使いましたが、実は Snowflake の機能を最大限に活かすと、**マッピングテーブルすら不要** にできます。
+
+それは、「列」だけでなく **「ロール」にもタグを付け、タグの値同士（レベル）を比較する** という方法です。
+
+
+
+* **列:** `sensitive_level_tag` = 'LEVEL_1'
+* **ロール:** `role_clearance_tag` = 'LEVEL_2'
+* **ポリシー:** `ロールのレベル >= 列のレベル` なら表示
+
+これなら、ロール名が変わろうがテーブルが変わろうが、タグの値さえ適切ならポリシーを変更する必要は一切ありません。
+
+> **Frosty Friday の要件について**
+> この解法でも `CURRENT_ROLE()` を使用しますが、これはロール名でハードコードして分岐するためではなく、**ロールに付与されたタグ値を取得するための“参照キー”** として使用しています。これにより「ロール名に依存しない」という課題の意図を完全に満たします。
+
+### 実装例（SQL）
+
+> **重要：パターン1の設定解除**
+> このパターン2を試す前に、先ほどテーブル列に設定したパターン1のタグを外してください。1つの列に複数のマスキングポリシーが適用される状態（競合）を防ぐためです。
+>
+> ```sql
+> USE ROLE ACCOUNTADMIN;
+> ALTER TABLE data_to_be_masked MODIFY COLUMN first_name UNSET TAG sensitive_data_tag;
+> ALTER TABLE data_to_be_masked MODIFY COLUMN last_name UNSET TAG sensitive_data_tag;
+> ```
+
+**1. 2つのタグを作成**
+
+`ALLOWED_VALUES` はあえて設定せず、柔軟性を持たせます。その代わり、運用ルールとして**値は必ず `LEVEL_<数字>` 形式にする** ことを徹底します。
+
+```sql
+USE ROLE ACCOUNTADMIN;
+USE SCHEMA FROSTY_FRIDAY.WEEK_009;
+
+-- (A) 列に付ける「機密レベル」タグ
+CREATE OR REPLACE TAG sensitive_level_tag
+  COMMENT = 'Column sensitivity (LEVEL_1/LEVEL_2)';
+
+-- (B) ロールに付ける「クリアランス（権限）レベル」タグ
+CREATE OR REPLACE TAG role_clearance_tag
+  COMMENT = 'Role clearance (LEVEL_0/LEVEL_1/LEVEL_2)';
+```
+
+**2. レベル比較を行うマスキングポリシーの作成**
+
+`SYSTEM$GET_TAG` 関数を使って、実行中のロール (`CURRENT_ROLE()`) に付いているタグの値を取得し、列のタグ値と比較します。
+今回は `CASE` 文で分岐するのではなく、`LEVEL_2` のような文字列から数字部分（`2`）を抽出して比較することで、将来 `LEVEL_3` ができてもポリシー修正が不要なロジックにします。
+
+```sql
+CREATE OR REPLACE MASKING POLICY mask_by_tag_level AS (val STRING) RETURNS STRING ->
+  CASE
+    WHEN val IS NULL THEN NULL
+    WHEN
+      /* ロール側のタグ値から数値を抽出 (例: 'LEVEL_2' -> 2) */
+      COALESCE(
+        TRY_TO_NUMBER(
+          SPLIT_PART(
+            SYSTEM$GET_TAG('FROSTY_FRIDAY.WEEK_009.role_clearance_tag', CURRENT_ROLE(), 'ROLE'),
+            '_',
+            2
+          )
+        ),
+        0 -- タグが無い、または形式違いならレベル0（権限なし）
+      )
+      >=
+      /* 列側のタグ値から数値を抽出 */
+      COALESCE(
+        TRY_TO_NUMBER(
+          SPLIT_PART(
+            SYSTEM$GET_TAG_ON_CURRENT_COLUMN('FROSTY_FRIDAY.WEEK_009.sensitive_level_tag'),
+            '_',
+            2
+          )
+        ),
+        999 -- タグが無い、または形式違いなら最高機密扱い（安全側に倒す）
+      )
+    THEN val
+    ELSE '*********'
+  END;
+
+-- ポリシーを列用タグに紐付け
+ALTER TAG sensitive_level_tag SET MASKING POLICY mask_by_tag_level;
+```
+
+**3. ロールと列にタグを付与**
+
+この方式では、「誰がロールにタグを付けられるか」がセキュリティの肝になります。
+
+> **セキュリティ上の最重要ポイント**
+> この方式では、**タグが権限そのもの**になります。もし誰かが勝手に自分のロールに `LEVEL_99` を設定できたら、全てのデータが見えてしまいます。
+> 実務では、このタグの `APPLY` 権限は、極少数のガバナンス担当ロールのみに限定してください。
+> ロールにタグを付けるには、以下の権限が必要です。
+>
+> 1.  対象ロール（例: `foo1`）に対する権限（オーナー or 上位ロール）
+> 2.  タグ（`role_clearance_tag`）に対する `APPLY` 権限
+> 3.  タグが存在するスキーマへの `USAGE` 権限
+
+```sql
+-- ロールにクリアランスレベルを設定
+-- (※ACCOUNTADMIN で実行するか、上記権限を持つロールで行ってください)
+ALTER ROLE foo1 SET TAG FROSTY_FRIDAY.WEEK_009.role_clearance_tag = 'LEVEL_1';
+ALTER ROLE foo2 SET TAG FROSTY_FRIDAY.WEEK_009.role_clearance_tag = 'LEVEL_2';
+-- SYSADMIN は設定しない (= LEVEL_0 扱い)
+
+-- 列に機密レベルを設定
+ALTER TABLE data_to_be_masked MODIFY COLUMN first_name SET TAG sensitive_level_tag = 'LEVEL_1';
+ALTER TABLE data_to_be_masked MODIFY COLUMN last_name  SET TAG sensitive_level_tag = 'LEVEL_2';
+```
+
+これで、マッピングテーブルを管理することなく、タグの付け替えだけで権限管理が完結するシステムが構築できました。
 
 
 ## 学びとポイント
